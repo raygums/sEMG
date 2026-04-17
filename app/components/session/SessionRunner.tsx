@@ -170,14 +170,30 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     }
   }, [config, logEvent, flushEvents, session.id])
 
-  // Main timer loop with requestAnimationFrame
+  // Main timer loop with Web Worker
   useEffect(() => {
     if (!isRunning || isFinished) return
 
     let lastPhase = phase
     let lastRep = repetition
 
-    const tick = () => {
+    // Injeksi Web Worker via Blob
+    // Worker ini kebal dari Tab Background Throttling Chrome/Safari
+    const workerCode = `
+      let timerId = null;
+      self.onmessage = function(e) {
+        if (e.data === 'start') {
+          // Kirim detak keutas utama (sekitar ~60fps)
+          timerId = setInterval(() => self.postMessage('tick'), 16);
+        } else if (e.data === 'stop') {
+          clearInterval(timerId);
+        }
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' })
+    const worker = new Worker(URL.createObjectURL(blob))
+
+    worker.onmessage = () => {
       const elapsed = (performance.now() - phaseStartRef.current) / 1000
       const duration = getPhaseDuration(lastPhase)
       const remaining = Math.max(0, duration - elapsed)
@@ -196,13 +212,14 @@ export default function SessionRunner({ session }: { session: SessionData }) {
           lastRep += 1
         }
       }
-
-      rafRef.current = requestAnimationFrame(tick)
     }
 
-    rafRef.current = requestAnimationFrame(tick)
+    worker.postMessage('start')
 
-    return () => cancelAnimationFrame(rafRef.current)
+    return () => {
+      worker.postMessage('stop')
+      worker.terminate()
+    }
   }, [isRunning, isFinished, phase, repetition, getPhaseDuration, nextPhase, config.repetitionCount])
 
   // Periodic flush events
