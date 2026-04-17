@@ -31,7 +31,12 @@ export default function SessionStarter({
 }) {
   const router = useRouter()
   const [selectedGesture, setSelectedGesture] = useState<string | null>(null)
+  const [participantId, setParticipantId] = useState('')
   const [participantName, setParticipantName] = useState('')
+  const [age, setAge] = useState('')
+  const [gender, setGender] = useState('')
+  const [dominantHand, setDominantHand] = useState('')
+  const [condition, setCondition] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function startSession() {
@@ -44,7 +49,12 @@ export default function SessionStarter({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gestureId: selectedGesture,
+          participantId: participantId || undefined,
           participantName: participantName || undefined,
+          age: age || undefined,
+          gender: gender || undefined,
+          dominantHand: dominantHand || undefined,
+          condition: condition || undefined,
         }),
       })
 
@@ -99,15 +109,45 @@ export default function SessionStarter({
           </div>
         )}
 
-        {/* Participant Name */}
-        <div className="glass-card p-5">
-          <label className="label">Nama Partisipan (opsional)</label>
-          <input
-            className="input"
-            placeholder="Masukkan nama partisipan..."
-            value={participantName}
-            onChange={(e) => setParticipantName(e.target.value)}
-          />
+        {/* Participant Metadata Form */}
+        <div className="glass-card p-5 space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>Data Partisipan (Opsional)</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label">ID Partisipan / Kode</label>
+              <input className="input" placeholder="e.g. SUBJ-001" value={participantId} onChange={(e) => setParticipantId(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Nama / Inisial</label>
+              <input className="input" placeholder="e.g. Budi S." value={participantName} onChange={(e) => setParticipantName(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Umur (Tahun)</label>
+              <input type="number" className="input" placeholder="e.g. 24" value={age} onChange={(e) => setAge(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Gender</label>
+              <select className="input" value={gender} onChange={(e) => setGender(e.target.value)}>
+                <option value="">Pilih Gender...</option>
+                <option value="Male">Laki-laki</option>
+                <option value="Female">Perempuan</option>
+                <option value="Other">Lainnya</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Dominan Tangan</label>
+              <select className="input" value={dominantHand} onChange={(e) => setDominantHand(e.target.value)}>
+                <option value="">Pilih Tangan...</option>
+                <option value="Right">Kanan</option>
+                <option value="Left">Kiri</option>
+                <option value="Ambidextrous">Keduanya (Ambidextrous)</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Kondisi / Catatan Klinis</label>
+              <input className="input" placeholder="e.g. Sehat, Myalgia" value={condition} onChange={(e) => setCondition(e.target.value)} />
+            </div>
+          </div>
         </div>
 
         {/* Gesture Selection */}
