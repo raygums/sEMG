@@ -17,7 +17,7 @@ datasource db {
 model Admin {
   id        String   @id @default(cuid())
   username  String   @unique
-  password  String   // bcrypt hashed
+  password  String // bcrypt hashed
   name      String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -62,7 +62,12 @@ model SessionConfig {
 
 model Session {
   id              String        @id @default(cuid())
+  participantId   String?
   participantName String?
+  age             Int?
+  gender          String?
+  dominantHand    String?
+  condition       String?
   gestureId       String
   gesture         Gesture       @relation(fields: [gestureId], references: [id])
   configId        String
@@ -81,6 +86,6 @@ model EventLog {
   eventType       String
   repetitionNum   Int?
   timestamp       DateTime @default(now())
-  clientTimestamp  BigInt
+  clientTimestamp BigInt
   metadata        Json?
 }
