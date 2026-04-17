@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react'
 import { createGesture, updateGesture, deleteGesture } from '@/app/lib/actions'
+import { Hand } from 'lucide-react'
 
 interface Gesture {
   id: string
@@ -162,7 +163,7 @@ export default function GestureManager({ gestures: initialGestures }: { gestures
       {/* Gesture Grid */}
       {gestures.length === 0 ? (
         <div className="glass-card p-12 text-center">
-          <div className="text-4xl mb-3">🤚</div>
+          <div className="mb-3 flex items-center justify-center text-gray-500"><Hand strokeWidth={1.5} className="w-12 h-12" /></div>
           <p style={{ color: 'var(--text-secondary)' }}>Belum ada gesture. Tambah gesture pertama Anda.</p>
         </div>
       ) : (

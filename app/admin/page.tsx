@@ -1,6 +1,7 @@
 import { prisma } from '@/app/lib/prisma'
 import { ensureAdmin } from '@/app/lib/auth'
 import Link from 'next/link'
+import { Hand, BarChart3, CheckCircle2, RotateCw } from 'lucide-react'
 
 export default async function AdminDashboard() {
   await ensureAdmin()
@@ -37,28 +38,28 @@ export default async function AdminDashboard() {
     {
       label: 'Total Gesture',
       value: gestureCount,
-      icon: '🤚',
+      icon: <Hand strokeWidth={1.5} className="w-8 h-8 opacity-90" />,
       color: 'var(--color-preparation)',
       href: '/admin/gestures',
     },
     {
       label: 'Total Sesi',
       value: sessionCount,
-      icon: '📊',
+      icon: <BarChart3 strokeWidth={1.5} className="w-8 h-8 opacity-90" />,
       color: 'var(--color-accent)',
       href: '/admin/sessions',
     },
     {
       label: 'Sesi Selesai',
       value: completedCount,
-      icon: '✅',
+      icon: <CheckCircle2 strokeWidth={1.5} className="w-8 h-8 opacity-90" />,
       color: 'var(--color-action)',
       href: '/admin/sessions',
     },
     {
       label: 'Repetisi/Gesture',
       value: activeConfig?.repetitionCount ?? 10,
-      icon: '🔄',
+      icon: <RotateCw strokeWidth={1.5} className="w-8 h-8 opacity-90" />,
       color: 'var(--color-rest)',
       href: '/admin/config',
     },
@@ -86,7 +87,7 @@ export default async function AdminDashboard() {
                   {stat.value}
                 </p>
               </div>
-              <span className="text-2xl">{stat.icon}</span>
+              <div>{stat.icon}</div>
             </div>
           </Link>
         ))}

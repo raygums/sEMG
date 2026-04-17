@@ -1,4 +1,5 @@
 'use client'
+import { BarChart3 } from 'lucide-react'
 
 interface SessionRow {
   id: string
@@ -29,7 +30,7 @@ export default function SessionHistory({ sessions }: { sessions: SessionRow[] })
 
       {sessions.length === 0 ? (
         <div className="glass-card p-12 text-center">
-          <div className="text-4xl mb-3">📊</div>
+          <div className="mb-3 flex items-center justify-center text-gray-400"><BarChart3 strokeWidth={1.5} className="w-12 h-12" /></div>
           <p style={{ color: 'var(--text-secondary)' }}>Belum ada sesi yang terekam.</p>
         </div>
       ) : (

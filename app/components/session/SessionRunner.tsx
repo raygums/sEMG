@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { CheckCircle2, Hand } from 'lucide-react'
 import type { PhaseType, SessionEvent } from '@/app/lib/types'
 
 interface SessionData {
@@ -310,7 +311,9 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     return (
       <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
         <div className="text-center glass-card p-12 max-w-md animate-slide-up">
-          <div className="text-6xl mb-4">✅</div>
+          <div className="mb-4 flex flex-col items-center justify-center text-emerald-400">
+            <CheckCircle2 strokeWidth={1.5} className="w-20 h-20 shadow-emerald-500/20 drop-shadow-xl" />
+          </div>
           <h1 className="text-2xl font-bold mb-2" style={{ color: 'var(--color-action)' }}>
             Sesi Selesai!
           </h1>
@@ -438,7 +441,9 @@ export default function SessionRunner({ session }: { session: SessionData }) {
             />
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center">
-              <span className="text-6xl mb-3">🤚</span>
+              <span className="mb-3 flex items-center justify-center">
+                <Hand strokeWidth={1.5} className="w-16 h-16 text-gray-500" />
+              </span>
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{gesture.label}</p>
             </div>
           )}

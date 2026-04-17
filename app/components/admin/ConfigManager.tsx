@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { createConfig, updateConfig, setActiveConfig } from '@/app/lib/actions'
+import { Hourglass, Dumbbell, Coffee, RotateCw } from 'lucide-react'
 
 interface Config {
   id: string
@@ -68,10 +69,10 @@ export default function ConfigManager({ configs: initialConfigs }: { configs: Co
             </h2>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <PhaseCard label="Persiapan" value={activeConfig.preparationDuration} unit="detik" color="var(--color-preparation)" icon="⏳" />
-            <PhaseCard label="Aksi" value={activeConfig.actionDuration} unit="detik" color="var(--color-action)" icon="💪" />
-            <PhaseCard label="Istirahat" value={activeConfig.restDuration} unit="detik" color="var(--color-rest)" icon="😌" />
-            <PhaseCard label="Repetisi" value={activeConfig.repetitionCount} unit="kali" color="var(--color-accent)" icon="🔄" />
+            <PhaseCard label="Persiapan" value={activeConfig.preparationDuration} unit="detik" color="var(--color-preparation)" icon={<Hourglass strokeWidth={1.5} className="w-6 h-6 opacity-70" />} />
+            <PhaseCard label="Aksi" value={activeConfig.actionDuration} unit="detik" color="var(--color-action)" icon={<Dumbbell strokeWidth={1.5} className="w-6 h-6 opacity-70" />} />
+            <PhaseCard label="Istirahat" value={activeConfig.restDuration} unit="detik" color="var(--color-rest)" icon={<Coffee strokeWidth={1.5} className="w-6 h-6 opacity-70" />} />
+            <PhaseCard label="Repetisi" value={activeConfig.repetitionCount} unit="kali" color="var(--color-accent)" icon={<RotateCw strokeWidth={1.5} className="w-6 h-6 opacity-70" />} />
           </div>
           <div className="mt-4 p-3 rounded-xl text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}>
             Total durasi per gesture: <strong style={{ color: 'var(--text-primary)' }}>
@@ -95,21 +96,21 @@ export default function ConfigManager({ configs: initialConfigs }: { configs: Co
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="label">⏳ Persiapan (detik)</label>
+                  <label className="label flex items-center gap-2"><Hourglass className="w-4 h-4 text-cyan-400" /> Persiapan (detik)</label>
                   <input name="preparationDuration" type="number" min="1" max="30" className="input" required defaultValue={editing?.preparationDuration ?? 3} />
                 </div>
                 <div>
-                  <label className="label">💪 Aksi (detik)</label>
+                  <label className="label flex items-center gap-2"><Dumbbell className="w-4 h-4 text-emerald-400" /> Aksi (detik)</label>
                   <input name="actionDuration" type="number" min="1" max="60" className="input" required defaultValue={editing?.actionDuration ?? 5} />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="label">😌 Istirahat (detik)</label>
+                  <label className="label flex items-center gap-2"><Coffee className="w-4 h-4 text-amber-400" /> Istirahat (detik)</label>
                   <input name="restDuration" type="number" min="1" max="30" className="input" required defaultValue={editing?.restDuration ?? 3} />
                 </div>
                 <div>
-                  <label className="label">🔄 Repetisi</label>
+                  <label className="label flex items-center gap-2"><RotateCw className="w-4 h-4 text-teal-400" /> Repetisi</label>
                   <input name="repetitionCount" type="number" min="1" max="100" className="input" required defaultValue={editing?.repetitionCount ?? 10} />
                 </div>
               </div>
@@ -161,10 +162,10 @@ export default function ConfigManager({ configs: initialConfigs }: { configs: Co
   )
 }
 
-function PhaseCard({ label, value, unit, color, icon }: { label: string; value: number; unit: string; color: string; icon: string }) {
+function PhaseCard({ label, value, unit, color, icon }: { label: string; value: number; unit: string; color: string; icon: React.ReactNode }) {
   return (
     <div className="text-center p-4 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
-      <span className="text-lg">{icon}</span>
+      <div className="flex justify-center">{icon}</div>
       <p className="text-2xl font-bold mt-1" style={{ color }}>{value}</p>
       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{unit} {label}</p>
     </div>

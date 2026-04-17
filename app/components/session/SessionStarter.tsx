@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { Hand } from 'lucide-react'
 
 interface Gesture {
   id: string
@@ -171,8 +172,8 @@ export default function SessionStarter({
                     <video src={g.videoUrl} className="w-full h-full object-cover" preload="metadata" muted />
                   </div>
                 ) : (
-                  <div className="rounded-lg mb-2 flex items-center justify-center" style={{ aspectRatio: '16/10', background: 'var(--bg-primary)' }}>
-                    <span className="text-2xl">🤚</span>
+                  <div className="rounded-lg mb-2 flex items-center justify-center text-gray-500" style={{ aspectRatio: '16/10', background: 'var(--bg-primary)' }}>
+                    <Hand strokeWidth={1.5} className="w-8 h-8 opacity-70" />
                   </div>
                 )}
                 <p className="text-sm font-medium" style={{ color: selectedGesture === g.id ? 'var(--color-accent)' : 'var(--text-primary)' }}>

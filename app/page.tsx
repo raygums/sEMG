@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { TimerReset, BarChart3, Radio } from 'lucide-react'
 
 export default function HomePage() {
   return (
@@ -120,23 +121,23 @@ export default function HomePage() {
         <div className="max-w-4xl mx-auto grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[
             {
-              icon: '⏱️',
+              icon: <TimerReset strokeWidth={1.5} className="w-8 h-8 mb-2 mx-auto" style={{ color: 'var(--color-preparation)' }} />,
               title: 'Presisi Milidetik',
-              desc: 'Timer berbasis requestAnimationFrame dengan presisi sub-milidetik',
+              desc: 'Timer berbasis Web Worker dengan presisi sub-milidetik',
             },
             {
-              icon: '📊',
+              icon: <BarChart3 strokeWidth={1.5} className="w-8 h-8 mb-2 mx-auto" style={{ color: 'var(--color-action)' }} />,
               title: 'Export Data',
               desc: 'Event log terekam otomatis, siap export CSV/JSON untuk analisis',
             },
             {
-              icon: '🔄',
+              icon: <Radio strokeWidth={1.5} className="w-8 h-8 mb-2 mx-auto" style={{ color: 'var(--color-accent)' }} />,
               title: 'Sinkronisasi Real-time',
               desc: 'SSE trigger ke modul sensor untuk sinkronisasi waktu nyata',
             },
           ].map((feat) => (
             <div key={feat.title} className="glass-card p-5 text-center">
-              <span className="text-2xl">{feat.icon}</span>
+              <div>{feat.icon}</div>
               <h3 className="text-sm font-semibold mt-2" style={{ color: 'var(--text-primary)' }}>{feat.title}</h3>
               <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{feat.desc}</p>
             </div>
