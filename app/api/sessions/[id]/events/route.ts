@@ -24,7 +24,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const exportData = {
     sessionId: session.id,
+    participantId: session.participantId,
     participantName: session.participantName || 'Unknown',
+    age: session.age,
+    gender: session.gender,
+    dominantHand: session.dominantHand,
+    condition: session.condition,
     gestureName: session.gesture.name,
     gestureLabel: session.gesture.label,
     events: session.events.map((e) => ({

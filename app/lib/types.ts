@@ -59,7 +59,12 @@ export interface ConfigFormData {
 
 export interface ExportData {
   sessionId: string
+  participantId?: string | null
   participantName: string
+  age?: number | null
+  gender?: string | null
+  dominantHand?: string | null
+  condition?: string | null
   gestureName: string
   gestureLabel: string
   events: {
