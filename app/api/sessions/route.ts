@@ -30,7 +30,12 @@ export async function POST(request: Request) {
     data: {
       gestureId: body.gestureId,
       configId: config.id,
+      participantId: body.participantId || null,
       participantName: body.participantName || null,
+      age: body.age ? parseInt(body.age) : null,
+      gender: body.gender || null,
+      dominantHand: body.dominantHand || null,
+      condition: body.condition || null,
     },
     include: { gesture: true, config: true },
   })
