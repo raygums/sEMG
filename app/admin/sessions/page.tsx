@@ -13,7 +13,12 @@ export default async function SessionsPage() {
 
   const serialized = sessions.map((s) => ({
     id: s.id,
+    participantId: s.participantId,
     participantName: s.participantName,
+    age: s.age,
+    gender: s.gender,
+    dominantHand: s.dominantHand,
+    condition: s.condition,
     status: s.status,
     gestureName: s.gesture.name,
     gestureLabel: s.gesture.label,

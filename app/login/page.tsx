@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
+import { ArrowLeft } from 'lucide-react'
 import { loginAction } from '@/app/lib/actions'
 
 export default function LoginPage() {
@@ -19,6 +21,20 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg-primary)' }}>
+      {/* Back button */}
+      <Link 
+        href="/" 
+        className="absolute top-6 left-6 md:top-8 md:left-8 z-20 flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all hover:bg-white/5" 
+        style={{ 
+          color: 'var(--text-secondary)',
+          background: 'rgba(255, 255, 255, 0.03)',
+          border: '1px solid var(--border-default)'
+        }}
+      >
+        <ArrowLeft size={16} />
+        Kembali ke Beranda
+      </Link>
+
       {/* Background decoration */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div

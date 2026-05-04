@@ -132,7 +132,6 @@ export default function SessionStarter({
                 <option value="">Pilih Gender...</option>
                 <option value="Male">Laki-laki</option>
                 <option value="Female">Perempuan</option>
-                <option value="Other">Lainnya</option>
               </select>
             </div>
             <div>
@@ -187,8 +186,9 @@ export default function SessionStarter({
 
         {/* Selected & Start */}
         {selected && (
-          <div className="glass-card p-5 glow-action animate-slide-up flex items-center justify-between">
-            <div>
+          <div className="sticky bottom-6 z-20 mt-8 animate-slide-up">
+            <div className="glass-card p-5 glow-action flex items-center justify-between" style={{ boxShadow: '0 20px 40px rgba(0,0,0,0.8)' }}>
+              <div>
               <p className="text-xs uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Gesture terpilih</p>
               <p className="text-lg font-bold mt-1" style={{ color: 'var(--color-accent)' }}>{selected.label}</p>
             </div>
@@ -208,6 +208,7 @@ export default function SessionStarter({
                 </>
               )}
             </button>
+          </div>
           </div>
         )}
       </div>

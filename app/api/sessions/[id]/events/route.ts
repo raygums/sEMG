@@ -75,7 +75,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         sessionId: id,
         eventType: event.eventType,
         repetitionNum: event.repetitionNum ?? null,
-        clientTimestamp: BigInt(event.clientTimestamp),
+        clientTimestamp: event.clientTimestamp,
         metadata: event.metadata ?? Prisma.JsonNull,
       })),
     })
@@ -88,13 +88,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       sessionId: id,
       eventType: body.eventType,
       repetitionNum: body.repetitionNum ?? null,
-      clientTimestamp: BigInt(body.clientTimestamp),
+      clientTimestamp: body.clientTimestamp,
       metadata: body.metadata ?? Prisma.JsonNull,
     },
   })
 
-  return NextResponse.json({
-    ...event,
-    clientTimestamp: event.clientTimestamp.toString(),
-  }, { status: 201 })
+  return NextResponse.json(event, { status: 201 })
 }

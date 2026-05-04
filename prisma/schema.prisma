@@ -86,6 +86,6 @@ model EventLog {
   eventType       String
   repetitionNum   Int?
   timestamp       DateTime @default(now())
-  clientTimestamp BigInt
+  clientTimestamp Float
   metadata        Json?
 }

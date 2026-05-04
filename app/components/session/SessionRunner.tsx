@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, Hand } from 'lucide-react'
+import { audioCue } from '@/app/lib/audioCue'
 import type { PhaseType, SessionEvent } from '@/app/lib/types'
 
 interface SessionData {
@@ -52,16 +53,21 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
   const [phase, setPhase] = useState<PhaseType>('PREPARATION')
   const [repetition, setRepetition] = useState(1)
-  const [timeRemaining, setTimeRemaining] = useState(config.preparationDuration)
   const [isRunning, setIsRunning] = useState(false)
   const [isFinished, setIsFinished] = useState(false)
-  const [countdown, setCountdown] = useState<number | null>(null) // Pre-start countdown
+  const [countdown, setCountdown] = useState<number | null>(null)
 
   const eventsRef = useRef<SessionEvent[]>([])
   const startTimeRef = useRef<number>(0)
   const phaseStartRef = useRef<number>(0)
   const rafRef = useRef<number>(0)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const timerDisplayRef = useRef<HTMLDivElement>(null)
+  const timeRemainingRef = useRef<number>(config.preparationDuration)
+  const phaseRef = useRef<PhaseType>('PREPARATION')
+  const repetitionRef = useRef<number>(1)
+  const workerRef = useRef<Worker | null>(null)
+  const audioInitializedRef = useRef(false)
 
   // Phase durations
   const getPhaseDuration = useCallback((p: PhaseType) => {
@@ -77,7 +83,7 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     const event: SessionEvent = {
       eventType: eventType as SessionEvent['eventType'],
       repetitionNum: rep,
-      clientTimestamp: Date.now(),
+      clientTimestamp: performance.now(), // Use performance.now() which matches Float type
       metadata: {
         gestureName: gesture.name,
         gestureLabel: gesture.label,
@@ -89,6 +95,14 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
     // Send trigger for ACTION phase
     if (eventType === 'PHASE_ACTION') {
+      // NOTE: Trigger Synchronization Architecture (Sprint 1 MVP)
+      // Current implementation uses HTTP fetch for trigger signals. This has ~50-200ms latency
+      // due to browser queue and network overhead, which is acceptable for recording setup.
+      //
+      // FOR PRODUCTION (Sprint 2+):
+      // - Replace with WebSockets (persistent connection, <10ms latency)
+      // - OR use Web Serial API for direct device connection (eliminates network latency)
+      // - Maintain this HTTP endpoint as fallback for development/testing
       fetch('/api/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -124,14 +138,21 @@ export default function SessionRunner({ session }: { session: SessionData }) {
   // Transition to next phase
   const nextPhase = useCallback((currentPhase: PhaseType, currentRep: number) => {
     if (currentPhase === 'PREPARATION') {
+      phaseRef.current = 'ACTION'
       setPhase('ACTION')
-      setTimeRemaining(config.actionDuration)
       phaseStartRef.current = performance.now()
+      const phaseEndTime = phaseStartRef.current + config.actionDuration * 1000
+      scheduleAudioCue(phaseEndTime)
       logEvent('PHASE_ACTION', currentRep, { phaseDuration: config.actionDuration })
     } else if (currentPhase === 'ACTION') {
+      phaseRef.current = 'REST'
       setPhase('REST')
-      setTimeRemaining(config.restDuration)
+      if (videoRef.current) {
+        videoRef.current.pause()
+      }
       phaseStartRef.current = performance.now()
+      const phaseEndTime = phaseStartRef.current + config.restDuration * 1000
+      scheduleAudioCue(phaseEndTime)
       logEvent('PHASE_REST', currentRep, { phaseDuration: config.restDuration })
       logEvent('REPETITION_END', currentRep)
     } else if (currentPhase === 'REST') {
@@ -155,10 +176,13 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
       // Next repetition
       const nextRep = currentRep + 1
+      repetitionRef.current = nextRep
       setRepetition(nextRep)
+      phaseRef.current = 'PREPARATION'
       setPhase('PREPARATION')
-      setTimeRemaining(config.preparationDuration)
       phaseStartRef.current = performance.now()
+      const phaseEndTime = phaseStartRef.current + config.preparationDuration * 1000
+      scheduleAudioCue(phaseEndTime)
       logEvent('REPETITION_START', nextRep)
       logEvent('PHASE_PREPARATION', nextRep, { phaseDuration: config.preparationDuration })
 
@@ -170,57 +194,55 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     }
   }, [config, logEvent, flushEvents, session.id])
 
-  // Main timer loop with Web Worker
+  // Main timer loop with Web Worker (NO setTimeRemaining to avoid re-render hell)
   useEffect(() => {
-    if (!isRunning || isFinished) return
+    if (!isRunning || isFinished) {
+      if (workerRef.current) {
+        workerRef.current.postMessage('stop')
+        workerRef.current.terminate()
+        workerRef.current = null
+      }
+      return
+    }
 
-    let lastPhase = phase
-    let lastRep = repetition
-
-    // Injeksi Web Worker via Blob
-    // Worker ini kebal dari Tab Background Throttling Chrome/Safari
+    // Create Web Worker for timing
     const workerCode = `
       let timerId = null;
       self.onmessage = function(e) {
         if (e.data === 'start') {
-          // Kirim detak keutas utama (sekitar ~60fps)
           timerId = setInterval(() => self.postMessage('tick'), 16);
         } else if (e.data === 'stop') {
           clearInterval(timerId);
         }
       };
-    `;
+    `
     const blob = new Blob([workerCode], { type: 'application/javascript' })
     const worker = new Worker(URL.createObjectURL(blob))
+    workerRef.current = worker
 
     worker.onmessage = () => {
       const elapsed = (performance.now() - phaseStartRef.current) / 1000
-      const duration = getPhaseDuration(lastPhase)
+      const duration = getPhaseDuration(phaseRef.current)
       const remaining = Math.max(0, duration - elapsed)
 
-      setTimeRemaining(remaining)
+      // Update display directly without React re-render
+      updateTimerDisplay(remaining)
 
       if (remaining <= 0) {
-        nextPhase(lastPhase, lastRep)
-
-        // Update local tracking
-        if (lastPhase === 'PREPARATION') lastPhase = 'ACTION'
-        else if (lastPhase === 'ACTION') lastPhase = 'REST'
-        else if (lastPhase === 'REST') {
-          if (lastRep >= config.repetitionCount) return
-          lastPhase = 'PREPARATION'
-          lastRep += 1
-        }
+        nextPhase(phaseRef.current, repetitionRef.current)
       }
     }
 
     worker.postMessage('start')
 
     return () => {
-      worker.postMessage('stop')
-      worker.terminate()
+      if (worker) {
+        worker.postMessage('stop')
+        worker.terminate()
+        workerRef.current = null
+      }
     }
-  }, [isRunning, isFinished, phase, repetition, getPhaseDuration, nextPhase, config.repetitionCount])
+  }, [isRunning, isFinished, getPhaseDuration, nextPhase])
 
   // Periodic flush events
   useEffect(() => {
@@ -229,9 +251,25 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     return () => clearInterval(interval)
   }, [isRunning, flushEvents])
 
-  // Pre-start countdown
+  // Pre-start countdown with fullscreen and audio init
   function startCountdown() {
     setCountdown(3)
+
+    // Initialize audio context (required for autoplay policy)
+    audioCue.initializeAudioContext()
+    audioInitializedRef.current = true
+
+    // Request fullscreen
+    try {
+      const elem = document.documentElement
+      if (elem.requestFullscreen) {
+        elem.requestFullscreen().catch(() => {
+          console.warn('Fullscreen request failed')
+        })
+      }
+    } catch (error) {
+      console.warn('Fullscreen not available:', error)
+    }
 
     // Update session status to running
     fetch(`/api/sessions/${session.id}`, {
@@ -248,15 +286,17 @@ export default function SessionRunner({ session }: { session: SessionData }) {
       setIsRunning(true)
       startTimeRef.current = performance.now()
       phaseStartRef.current = performance.now()
+      phaseRef.current = 'PREPARATION'
+      repetitionRef.current = 1
+
+      // Initialize display
+      updateTimerDisplay(config.preparationDuration)
 
       logEvent('SESSION_START', 1)
       logEvent('REPETITION_START', 1)
       logEvent('PHASE_PREPARATION', 1, { phaseDuration: config.preparationDuration })
 
-      // Start video
-      if (videoRef.current) {
-        videoRef.current.play().catch(() => {})
-      }
+      // Note: Video play is handled by autoPlay attribute when the main UI mounts
       return
     }
 
@@ -283,7 +323,7 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
   // Progress calculations
   const phaseDuration = getPhaseDuration(phase)
-  const phaseProgress = phaseDuration > 0 ? ((phaseDuration - timeRemaining) / phaseDuration) * 100 : 0
+  const phaseProgress = phaseDuration > 0 ? ((phaseDuration - timeRemainingRef.current) / phaseDuration) * 100 : 0
 
   const totalPhases = config.repetitionCount * 3
   const completedPhases = (repetition - 1) * 3 +
@@ -292,12 +332,35 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
   const phaseStyle = PHASE_COLORS[phase]
 
-  // Format time
+  // Format time with milliseconds
   function formatTime(seconds: number): string {
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
     const ms = Math.floor((seconds % 1) * 100)
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(2, '0')}`
+  }
+
+  // Update timer display directly (no React re-render)
+  function updateTimerDisplay(remaining: number) {
+    if (timerDisplayRef.current) {
+      timerDisplayRef.current.textContent = formatTime(remaining)
+    }
+    timeRemainingRef.current = remaining
+  }
+
+  // Play audio cue 1 second before phase transition
+  function scheduleAudioCue(phaseEndTime: number) {
+    const now = performance.now()
+    const timeUntilEnd = (phaseEndTime - now) / 1000
+    
+    if (timeUntilEnd > 1) {
+      // Schedule audio cue 1 second before end
+      setTimeout(() => {
+        if (audioInitializedRef.current) {
+          audioCue.playDoubleBip()
+        }
+      }, (timeUntilEnd - 1) * 1000)
+    }
   }
 
   // Pre-start overlay
@@ -450,11 +513,15 @@ export default function SessionRunner({ session }: { session: SessionData }) {
             <video
               ref={videoRef}
               src={gesture.videoUrl}
-              className="w-full h-full object-contain"
+              className={`w-full h-full object-contain transition-all duration-700 ease-in-out
+                ${phase === 'REST' ? 'opacity-0 scale-95' : 'opacity-100'} 
+                ${phase === 'ACTION' ? 'scale-[1.03] brightness-110' : 'scale-100 brightness-75'}
+              `}
               loop
               muted
               playsInline
               preload="auto"
+              autoPlay
             />
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center">
@@ -483,8 +550,12 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
           {/* Timer */}
           <div className="text-right">
-            <p className="text-4xl font-mono font-bold tracking-tight" style={{ color: phaseStyle.text }}>
-              {formatTime(timeRemaining)}
+            <p 
+              ref={timerDisplayRef}
+              className="text-4xl font-mono font-bold tracking-tight" 
+              style={{ color: phaseStyle.text }}
+            >
+              {formatTime(timeRemainingRef.current)}
             </p>
           </div>
         </div>
@@ -495,7 +566,7 @@ export default function SessionRunner({ session }: { session: SessionData }) {
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span style={{ color: 'var(--text-muted)' }}>Sisa Waktu Fase</span>
-              <span style={{ color: phaseStyle.text }}>{formatTime(timeRemaining)}</span>
+              <span style={{ color: phaseStyle.text }}>{formatTime(timeRemainingRef.current)}</span>
             </div>
             <div className="progress-bar">
               <div
