@@ -19,6 +19,7 @@ export default async function SessionRunnerPage({ params }: { params: Promise<{ 
 
   const serialized = {
     id: session.id,
+    status: session.status as 'pending' | 'running' | 'completed' | 'aborted',
     participantName: session.participantName,
     gesture: {
       id: session.gesture.id,
