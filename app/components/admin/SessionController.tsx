@@ -86,26 +86,31 @@ export default function SessionController({
   // ── PATCH helper ──────────────────────────────────────────────────────────
 
   async function patchStatus(next: SessionStatus, actionKey: 'start' | 'abort') {
-    setLoading(actionKey)
-    setError(null)
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}`, {
-        method:  'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ status: next }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
-      }
-      const data = await res.json() as { status: SessionStatus }
-      setStatus(data.status)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Terjadi kesalahan')
-    } finally {
-      setLoading(null)
+  setLoading(actionKey)
+  setError(null) // Tetap butuh ini untuk feedback jika server mati
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ status: next }),
+    })
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
     }
+
+    const data = await res.json() as { status: SessionStatus }
+    
+    // HANYA UPDATE STATE, JANGAN PINDAH HALAMAN
+    setStatus(data.status) 
+    
+  } catch (err) {
+    setError(err instanceof Error ? err.message : 'Terjadi kesalahan')
+  } finally {
+    setLoading(null)
   }
+}
 
   // ── Start handler ─────────────────────────────────────────────────────────
 
