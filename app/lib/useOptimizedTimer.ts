@@ -3,6 +3,7 @@ import { useEffect, useRef, useCallback } from 'react'
 interface UseOptimizedTimerOptions {
   duration: number
   isRunning: boolean
+  restartKey?: string | number
   onTimeUpdate?: (remaining: number) => void
   onComplete?: () => void
 }
@@ -11,10 +12,15 @@ interface UseOptimizedTimerOptions {
  * Optimized timer hook that avoids React re-render hell.
  * Uses useRef for calculations and direct DOM manipulation for UI updates.
  * Runs at ~60fps without triggering React state updates every frame.
+ *
+ * KEY FIX: Includes restartKey in dependency array to detect phase transitions
+ * even when duration values remain the same (e.g., REST→PREPARATION both 5s).
+ * This ensures the timer completely restarts on every phase/repetition change.
  */
 export function useOptimizedTimer({
   duration,
   isRunning,
+  restartKey,
   onTimeUpdate,
   onComplete,
 }: UseOptimizedTimerOptions) {
@@ -22,6 +28,7 @@ export function useOptimizedTimer({
   const phaseStartRef = useRef<number>(0)
   const workerRef = useRef<Worker | null>(null)
   const isCompleteRef = useRef(false)
+  const workerUrlRef = useRef<string>('')
 
   const updateDisplay = useCallback((remaining: number) => {
     if (!timerDisplayRef.current) return
@@ -35,14 +42,27 @@ export function useOptimizedTimer({
     timerDisplayRef.current.textContent = formatted
   }, [])
 
+  // Cleanup worker utility
+  const cleanupWorker = useCallback(() => {
+    if (workerRef.current) {
+      try {
+        workerRef.current.postMessage('stop')
+        workerRef.current.terminate()
+      } catch {
+        // Worker may have already terminated
+      }
+      workerRef.current = null
+    }
+    if (workerUrlRef.current) {
+      URL.revokeObjectURL(workerUrlRef.current)
+      workerUrlRef.current = ''
+    }
+  }, [])
+
   // Initialize or update timer
   useEffect(() => {
     if (!isRunning) {
-      if (workerRef.current) {
-        workerRef.current.postMessage('stop')
-        workerRef.current.terminate()
-        workerRef.current = null
-      }
+      cleanupWorker()
       isCompleteRef.current = false
       return
     }
@@ -50,6 +70,9 @@ export function useOptimizedTimer({
     // Reset state when starting
     phaseStartRef.current = performance.now()
     isCompleteRef.current = false
+
+    // Clean up any existing worker before creating a new one
+    cleanupWorker()
 
     // Create Web Worker for timing (survives background tab throttling)
     const workerCode = `
@@ -63,7 +86,9 @@ export function useOptimizedTimer({
       };
     `
     const blob = new Blob([workerCode], { type: 'application/javascript' })
-    const worker = new Worker(URL.createObjectURL(blob))
+    const workerUrl = URL.createObjectURL(blob)
+    workerUrlRef.current = workerUrl
+    const worker = new Worker(workerUrl)
     workerRef.current = worker
 
     worker.onmessage = () => {
@@ -90,12 +115,9 @@ export function useOptimizedTimer({
     worker.postMessage('start')
 
     return () => {
-      if (worker) {
-        worker.postMessage('stop')
-        worker.terminate()
-      }
+      cleanupWorker()
     }
-  }, [isRunning, duration, updateDisplay, onTimeUpdate, onComplete])
+  }, [isRunning, duration, restartKey, updateDisplay, onTimeUpdate, onComplete, cleanupWorker])
 
   return { timerDisplayRef }
 }

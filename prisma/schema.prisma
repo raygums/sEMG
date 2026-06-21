@@ -17,7 +17,7 @@ datasource db {
 model Admin {
   id        String   @id @default(cuid())
   username  String   @unique
-  password  String // bcrypt hashed
+  password  String   // bcrypt hashed
   name      String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -62,12 +62,12 @@ model SessionConfig {
 
 model Session {
   id              String        @id @default(cuid())
-  participantId   String?
+  participantId   String?       // Tambahkan ini
   participantName String?
-  age             Int?
-  gender          String?
-  dominantHand    String?
-  condition       String?
+  age             Int?          // Tambahkan ini
+  gender          String?       // Tambahkan ini
+  dominantHand    String?       // Tambahkan ini
+  condition       String?       // Tambahkan ini
   gestureId       String
   gesture         Gesture       @relation(fields: [gestureId], references: [id])
   configId        String
@@ -77,6 +77,8 @@ model Session {
   completedAt     DateTime?
   createdAt       DateTime      @default(now())
   events          EventLog[]
+  emgSamples      EmgSample[]
+  gatewayEvents   GatewayEvent[]
 }
 
 model EventLog {
@@ -86,6 +88,62 @@ model EventLog {
   eventType       String
   repetitionNum   Int?
   timestamp       DateTime @default(now())
-  clientTimestamp Float
+  clientTimestamp  BigInt
   metadata        Json?
+}
+
+// ============================================
+// EMG SENSOR SAMPLES (from BLE gateway)
+// ============================================
+
+model EmgSample {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Device-side timestamp: micros() on the nRF52840, as sent in the BLE packet.
+  // NOTE: this wraps around every ~71 minutes (uint32 overflow), so the gateway
+  // also stamps a wall-clock receivedAt for ordering/cross-referencing.
+  deviceTimestampUs BigInt
+
+  // Wall-clock time when the gateway received this sample (ms since epoch),
+  // used to align EMG samples with EventLog entries from the session runner.
+  receivedAt    DateTime @default(now())
+
+  // Raw and envelope values per channel (6 channels from "Hello SEMG by Cheez").
+  // Stored as Float[] for compactness; index 0..5 corresponds to PINS[0..5]
+  // (A0..A5) in the firmware.
+  raw           Float[]
+  envelope      Float[]
+
+  createdAt     DateTime @default(now())
+
+  @@index([sessionId, deviceTimestampUs])
+}
+
+// ============================================
+// GATEWAY CONNECTIVITY LOG (BLE disconnects)
+// ============================================
+
+// Records a single disconnect -> reconnect cycle reported by the Python
+// gateway. `reconnectedAt` is null while the gap is still open (i.e. the
+// gateway is currently disconnected and SessionRunner should be paused).
+// During preprocessing, any EmgSample with no clean coverage inside
+// [disconnectedAt, reconnectedAt] indicates a data gap that should be
+// excluded or flagged rather than treated as continuous signal.
+model GatewayEvent {
+  id             String    @id @default(cuid())
+  sessionId      String
+  session        Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  disconnectedAt DateTime  @default(now())
+  reconnectedAt  DateTime?
+
+  // Optional free-form context from the gateway (e.g. exception message,
+  // reconnect attempt count) for debugging connectivity issues later.
+  note           String?
+
+  createdAt      DateTime  @default(now())
+
+  @@index([sessionId, disconnectedAt])
 }
