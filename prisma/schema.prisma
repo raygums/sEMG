@@ -62,12 +62,12 @@ model SessionConfig {
 
 model Session {
   id              String        @id @default(cuid())
-  participantId   String?       // Tambahkan ini
+  participantId   String?
   participantName String?
-  age             Int?          // Tambahkan ini
-  gender          String?       // Tambahkan ini
-  dominantHand    String?       // Tambahkan ini
-  condition       String?       // Tambahkan ini
+  age             Int?
+  gender          String?
+  dominantHand    String?
+  condition       String?
   gestureId       String
   gesture         Gesture       @relation(fields: [gestureId], references: [id])
   configId        String
@@ -77,73 +77,77 @@ model Session {
   completedAt     DateTime?
   createdAt       DateTime      @default(now())
   events          EventLog[]
-  emgSamples      EmgSample[]
-  gatewayEvents   GatewayEvent[]
+  emgRecords      EmgRecord[]
 }
 
 model EventLog {
-  id              String   @id @default(cuid())
-  sessionId       String
-  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  eventType       String
-  repetitionNum   Int?
-  timestamp       DateTime @default(now())
+  id               String   @id @default(cuid())
+  sessionId        String
+  session          Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  eventType        String
+  repetitionNum    Int?
+  timestamp        DateTime @default(now())
   clientTimestamp  BigInt
-  metadata        Json?
+  metadata         Json?
 }
 
 // ============================================
-// EMG SENSOR SAMPLES (from BLE gateway)
+// EMG SENSOR RECORDS (from Serial bridge)
 // ============================================
 
-model EmgSample {
-  id            String   @id @default(cuid())
-  sessionId     String
-  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  // Device-side timestamp: micros() on the nRF52840, as sent in the BLE packet.
-  // NOTE: this wraps around every ~71 minutes (uint32 overflow), so the gateway
-  // also stamps a wall-clock receivedAt for ordering/cross-referencing.
-  deviceTimestampUs BigInt
-
-  // Wall-clock time when the gateway received this sample (ms since epoch),
-  // used to align EMG samples with EventLog entries from the session runner.
-  receivedAt    DateTime @default(now())
-
-  // Raw and envelope values per channel (6 channels from "Hello SEMG by Cheez").
-  // Stored as Float[] for compactness; index 0..5 corresponds to PINS[0..5]
-  // (A0..A5) in the firmware.
-  raw           Float[]
-  envelope      Float[]
-
-  createdAt     DateTime @default(now())
-
-  @@index([sessionId, deviceTimestampUs])
+enum Phase {
+  PREPARATION
+  ACTION
+  REST
 }
 
-// ============================================
-// GATEWAY CONNECTIVITY LOG (BLE disconnects)
-// ============================================
+model EmgRecord {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-// Records a single disconnect -> reconnect cycle reported by the Python
-// gateway. `reconnectedAt` is null while the gap is still open (i.e. the
-// gateway is currently disconnected and SessionRunner should be paused).
-// During preprocessing, any EmgSample with no clean coverage inside
-// [disconnectedAt, reconnectedAt] indicates a data gap that should be
-// excluded or flagged rather than treated as continuous signal.
-model GatewayEvent {
-  id             String    @id @default(cuid())
-  sessionId      String
-  session        Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // Pure sequence counter within a session: 0, 1, 2, ... n. Never ambiguous,
+  // independent of any clock. Use this for ordering/windowing.
+  sampleIndex Int
 
-  disconnectedAt DateTime  @default(now())
-  reconnectedAt  DateTime?
+  // Milliseconds elapsed since bridge received POST /session/start.
+  // Generated entirely by Python Bridge (time.perf_counter()), not firmware.
+  // Reset to 0 at the start of each new session. Safe from overflow for
+  // sessions up to ~24 days (Int 32-bit max ~2.1 billion ms).
+  elapsedMs   Int
 
-  // Optional free-form context from the gateway (e.g. exception message,
-  // reconnect attempt count) for debugging connectivity issues later.
-  note           String?
+  // Supervised learning label: which phase of the gesture protocol this
+  // sample belongs to.
+  phase       Phase
 
-  createdAt      DateTime  @default(now())
+  // True for the first N samples received after the bridge's local phase
+  // state changes (see TRANSITION_GUARD_SAMPLES in emg_bridge.py). These
+  // samples may carry a stale phase label due to the local HTTP round-trip
+  // between Next.js and the bridge -- kept (not dropped) so preprocessing
+  // can choose to exclude or use them.
+  isTransition Boolean @default(false)
 
-  @@index([sessionId, disconnectedAt])
+  // Raw signal per channel (6 channels from "Hello SEMG by Cheez").
+  // r1..r6 correspond to PINS[0..5] (A0..A5) in the firmware.
+  r1 Float
+  r2 Float
+  r3 Float
+  r4 Float
+  r5 Float
+  r6 Float
+
+  // Processed/envelope signal per channel, same channel order as r1..r6.
+  p1 Float
+  p2 Float
+  p3 Float
+  p4 Float
+  p5 Float
+  p6 Float
+
+  // Wall-clock time when the row was inserted (metadata only -- not the
+  // source of truth for ordering; use sampleIndex/elapsedMs for that).
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId, phase])
+  @@index([sessionId, sampleIndex])
 }

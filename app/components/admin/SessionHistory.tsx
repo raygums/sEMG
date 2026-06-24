@@ -1,7 +1,8 @@
 'use client'
 import { useState, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { BarChart3, Trash2, Loader2, Pencil, X } from 'lucide-react'
+import Link from 'next/link'
+import { BarChart3, Trash2, Loader2, Pencil, X, ExternalLink } from 'lucide-react'
 
 interface SessionRow {
   id: string
@@ -80,11 +81,17 @@ export default function SessionHistory({ sessions }: { sessions: SessionRow[] })
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Riwayat Sesi</h1>
-        <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Lihat semua sesi eksperimen dan export event log
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Riwayat Sesi</h1>
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Lihat semua sesi eksperimen dan export event log
+          </p>
+        </div>
+        <Link href="/admin/sessions/new" className="btn btn-primary text-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          Buat Sesi Baru
+        </Link>
       </div>
 
       {sessions.length === 0 ? (
@@ -144,6 +151,18 @@ export default function SessionHistory({ sessions }: { sessions: SessionRow[] })
                     </td>
                     <td>
                       <div className="flex items-center justify-end gap-1">
+                        {/* Kontrol button for active sessions */}
+                        {(s.status === 'pending' || s.status === 'running') && (
+                          <Link
+                            href={`/admin/sessions/${s.id}`}
+                            className="btn btn-ghost text-xs py-1 px-2 flex items-center gap-1"
+                            style={{ color: 'var(--color-accent)' }}
+                            title="Buka Panel Kontrol"
+                          >
+                            <ExternalLink size={13} />
+                            Kontrol
+                          </Link>
+                        )}
                         {s.eventCount > 0 && (
                           <>
                             <button

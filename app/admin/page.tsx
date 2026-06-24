@@ -134,8 +134,8 @@ export default async function AdminDashboard() {
         {recentSessions.length === 0 ? (
           <div className="py-12 text-center">
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Belum ada sesi. Mulai sesi pertama Anda.</p>
-            <Link href="/session" className="btn btn-primary mt-4 inline-flex">
-              Mulai Sesi
+            <Link href="/admin/sessions/new" className="btn btn-primary mt-4 inline-flex">
+              Buat Sesi
             </Link>
           </div>
         ) : (

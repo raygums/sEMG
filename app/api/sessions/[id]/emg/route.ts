@@ -1,72 +1,131 @@
+import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/app/lib/prisma'
-import { NextResponse } from 'next/server'
-import type { NextRequest } from 'next/server'
+import type { Phase } from '@/app/generated/prisma/client'
 
-interface IncomingEmgSample {
-  deviceTimestampUs: number | string
-  raw: number[]      
-  envelope: number[] 
+// ============================================
+// POST /api/sessions/[id]/emg
+// ============================================
+// Menerima batch EmgRecord dari Python bridge (bulk insert, ~tiap beberapa
+// ratus ms atau saat buffer penuh). Bridge bertanggung jawab penuh untuk
+// mengisi sampleIndex, elapsedMs, phase, dan isTransition per sample --
+// endpoint ini hanya memvalidasi bentuk payload dan menulis ke DB.
+
+interface IncomingSample {
+  sampleIndex: number
+  elapsedMs: number
+  phase: 'PREPARATION' | 'ACTION' | 'REST'
+  isTransition: boolean
+  r1: number; r2: number; r3: number; r4: number; r5: number; r6: number
+  p1: number; p2: number; p3: number; p4: number; p5: number; p6: number
 }
 
-const EXPECTED_CHANNELS = 6
+interface EmgBatchPayload {
+  samples: IncomingSample[]
+}
+
+const VALID_PHASES = new Set(['PREPARATION', 'ACTION', 'REST'])
+
+function isValidSample(s: unknown): s is IncomingSample {
+  if (typeof s !== 'object' || s === null) return false
+  const obj = s as Record<string, unknown>
+
+  const numericFields = [
+    'sampleIndex', 'elapsedMs',
+    'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
+    'p1', 'p2', 'p3', 'p4', 'p5', 'p6',
+  ]
+  for (const field of numericFields) {
+    if (typeof obj[field] !== 'number' || !Number.isFinite(obj[field] as number)) {
+      return false
+    }
+  }
+  if (typeof obj.phase !== 'string' || !VALID_PHASES.has(obj.phase)) {
+    return false
+  }
+  if (typeof obj.isTransition !== 'boolean') {
+    return false
+  }
+  return true
+}
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const url = new URL(_req.url)
   const limit = Math.min(Number(url.searchParams.get('limit')) || 1000, 10000)
 
-  const samples = await prisma.emgSample.findMany({
+  const records = await prisma.emgRecord.findMany({
     where: { sessionId: id },
-    orderBy: { receivedAt: 'asc' },
+    orderBy: { sampleIndex: 'asc' },
     take: limit,
   })
 
-  return NextResponse.json(
-    samples.map((s: { deviceTimestampUs: bigint; [key: string]: unknown }) => ({
-      ...s,
-      deviceTimestampUs: s.deviceTimestampUs.toString(),
-    }))
-  )
+  return NextResponse.json(records)
 }
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: sessionId } = await params
 
-  const session = await prisma.session.findUnique({ where: { id }, select: { id: true } })
-  if (!session) {
-    return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+  let body: EmgBatchPayload
+  try {
+    body = await request.json() as EmgBatchPayload
+  } catch {
+    return NextResponse.json(
+      { error: 'Body bukan JSON yang valid' },
+      { status: 400 }
+    )
   }
 
-  const body = await _req.json()
-  const samples: IncomingEmgSample[] = Array.isArray(body) ? body : [body]
-
-  if (samples.length === 0) {
-    return NextResponse.json({ count: 0 }, { status: 201 })
+  if (!Array.isArray(body?.samples) || body.samples.length === 0) {
+    return NextResponse.json(
+      { error: "Field 'samples' wajib berupa array dan tidak boleh kosong" },
+      { status: 400 }
+    )
   }
 
-  for (const s of samples) {
-    if (!Array.isArray(s.raw) || !Array.isArray(s.envelope)) {
+  // Validasi setiap sample sebelum insert — gagal satu, tolak seluruh batch
+  for (let i = 0; i < body.samples.length; i++) {
+    if (!isValidSample(body.samples[i])) {
       return NextResponse.json(
-        { error: 'Each sample requires raw[] and envelope[] arrays' },
+        { error: `Sample index ke-${i} dalam batch tidak valid`, sample: body.samples[i] },
         { status: 400 }
       )
     }
-    if (s.raw.length !== EXPECTED_CHANNELS || s.envelope.length !== EXPECTED_CHANNELS) {
-      return NextResponse.json(
-        { error: `Expected ${EXPECTED_CHANNELS} channels, got raw=${s.raw.length} envelope=${s.envelope.length}` },
-        { status: 400 }
-      )
-    }
   }
 
-  const created = await prisma.emgSample.createMany({
-    data: samples.map((s) => ({
-      sessionId: id,
-      deviceTimestampUs: BigInt(s.deviceTimestampUs),
-      raw: s.raw,
-      envelope: s.envelope,
-    })),
+  // Pastikan session memang ada sebelum insert
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { id: true },
   })
+  if (!session) {
+    return NextResponse.json(
+      { error: `Session ${sessionId} tidak ditemukan` },
+      { status: 404 }
+    )
+  }
 
-  return NextResponse.json({ count: created.count }, { status: 201 })
+  try {
+    const result = await prisma.emgRecord.createMany({
+      data: body.samples.map((s) => ({
+        sessionId,
+        sampleIndex: s.sampleIndex,
+        elapsedMs: s.elapsedMs,
+        phase: s.phase as Phase,
+        isTransition: s.isTransition,
+        r1: s.r1, r2: s.r2, r3: s.r3, r4: s.r4, r5: s.r5, r6: s.r6,
+        p1: s.p1, p2: s.p2, p3: s.p3, p4: s.p4, p5: s.p5, p6: s.p6,
+      })),
+    })
+
+    return NextResponse.json({ inserted: result.count }, { status: 201 })
+  } catch (err) {
+    console.error('Gagal bulk insert EmgRecord:', err)
+    return NextResponse.json(
+      { error: 'Gagal menyimpan batch ke database' },
+      { status: 500 }
+    )
+  }
 }

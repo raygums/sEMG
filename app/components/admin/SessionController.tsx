@@ -11,6 +11,9 @@ import {
   AlertTriangle,
   Wifi,
   WifiOff,
+  Monitor,
+  Copy,
+  Check,
 } from 'lucide-react'
 import type { SessionStatus } from '@/app/lib/types'
 
@@ -43,7 +46,7 @@ const STATUS_META: Record<
   aborted:   { label: 'Dihentikan', badgeClass: 'badge badge-danger',  Icon: XCircle },
 }
 
-const POLL_INTERVAL_MS = 1_500   // Admin panel polls at a relaxed rate
+const POLL_INTERVAL_MS = 1_500
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SessionController — Admin / Researcher View
@@ -56,14 +59,19 @@ export default function SessionController({
   participantName,
   config,
 }: SessionControllerProps) {
-  const [status, setStatus]       = useState<SessionStatus>('pending')
-  const [loading, setLoading]     = useState<'start' | 'abort' | null>(null)
-  const [error, setError]         = useState<string | null>(null)
-  const [pollOk, setPollOk]       = useState(true)
+  const [status, setStatus]             = useState<SessionStatus>('pending')
+  const [loading, setLoading]           = useState<'start' | 'abort' | null>(null)
+  const [error, setError]               = useState<string | null>(null)
+  const [pollOk, setPollOk]             = useState(true)
   const [confirmAbort, setConfirmAbort] = useState(false)
-  const confirmTimerRef           = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [copied, setCopied]             = useState(false)
+  const confirmTimerRef                 = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── Poll current status (admin side, relaxed rate) ────────────────────────
+  const participantUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/session/${sessionId}`
+    : `/session/${sessionId}`
+
+  // ── Poll current status ────────────────────────────────────────────────────
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -86,31 +94,26 @@ export default function SessionController({
   // ── PATCH helper ──────────────────────────────────────────────────────────
 
   async function patchStatus(next: SessionStatus, actionKey: 'start' | 'abort') {
-  setLoading(actionKey)
-  setError(null) // Tetap butuh ini untuk feedback jika server mati
-  try {
-    const res = await fetch(`/api/sessions/${sessionId}`, {
-      method:  'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ status: next }),
-    })
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}))
-      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+    setLoading(actionKey)
+    setError(null)
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ status: next }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+      }
+      const data = await res.json() as { status: SessionStatus }
+      setStatus(data.status)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Terjadi kesalahan')
+    } finally {
+      setLoading(null)
     }
-
-    const data = await res.json() as { status: SessionStatus }
-    
-    // HANYA UPDATE STATE, JANGAN PINDAH HALAMAN
-    setStatus(data.status) 
-    
-  } catch (err) {
-    setError(err instanceof Error ? err.message : 'Terjadi kesalahan')
-  } finally {
-    setLoading(null)
   }
-}
 
   // ── Start handler ─────────────────────────────────────────────────────────
 
@@ -131,6 +134,24 @@ export default function SessionController({
     patchStatus('aborted', 'abort')
   }
 
+  // ── Copy session ID ───────────────────────────────────────────────────────
+
+  async function handleCopyUrl() {
+    try {
+      await navigator.clipboard.writeText(participantUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // fallback: select text
+    }
+  }
+
+  // ── Open participant screen ───────────────────────────────────────────────
+
+  function openParticipantScreen() {
+    window.open(`/session/${sessionId}`, '_blank', 'noopener,noreferrer')
+  }
+
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const meta         = STATUS_META[status]
@@ -146,10 +167,10 @@ export default function SessionController({
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="glass-card p-6 max-w-xl w-full animate-fade-in">
+    <div className="glass-card p-6 max-w-xl w-full animate-fade-in space-y-6">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex items-start justify-between">
         <div>
           <p className="text-xs uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>
             Panel Kontrol Peneliti
@@ -170,19 +191,62 @@ export default function SessionController({
             <meta.Icon className="w-3 h-3 mr-1" />
             {meta.label}
           </span>
-          {/* Poll connection indicator */}
           <span className="flex items-center gap-1 text-xs" style={{ color: pollOk ? 'var(--text-muted)' : 'var(--color-danger)' }}>
-            {pollOk
-              ? <Wifi className="w-3 h-3" />
-              : <WifiOff className="w-3 h-3" />}
+            {pollOk ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
             {pollOk ? 'Terhubung' : 'Gagal terhubung'}
+          </span>
+        </div>
+      </div>
+
+      {/* ── Participant screen link ────────────────────────────────────────── */}
+      <div
+        className="rounded-xl p-4 space-y-3"
+        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-default)' }}
+      >
+        <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          Layar Partisipan
+        </p>
+        <div className="flex items-center gap-2">
+          <code
+            className="flex-1 text-xs font-mono px-3 py-2 rounded-lg truncate"
+            style={{ background: 'rgba(0,0,0,0.3)', color: 'var(--color-accent)' }}
+          >
+            /session/{sessionId}
+          </code>
+          <button
+            className="btn btn-ghost text-xs px-2 py-1.5 shrink-0"
+            onClick={handleCopyUrl}
+            title="Salin URL"
+          >
+            {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+          </button>
+          <button
+            className="btn btn-ghost text-xs px-2 py-1.5 shrink-0 flex items-center gap-1"
+            onClick={openParticipantScreen}
+            title="Buka layar partisipan di tab baru"
+          >
+            <Monitor className="w-4 h-4" />
+            <span className="hidden sm:inline">Buka</span>
+          </button>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Buka URL di atas di perangkat/layar partisipan, lalu masukkan Session ID atau gunakan tautan langsung.
+        </p>
+        {/* Session ID for easy copy */}
+        <div className="flex items-center gap-2 pt-1">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Session ID:</span>
+          <span
+            className="font-mono text-xs px-2 py-1 rounded select-all"
+            style={{ background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)' }}
+          >
+            {sessionId}
           </span>
         </div>
       </div>
 
       {/* ── Config summary ────────────────────────────────────────────────── */}
       <div
-        className="grid grid-cols-4 gap-2 rounded-xl p-4 mb-6"
+        className="grid grid-cols-4 gap-2 rounded-xl p-4"
         style={{ background: 'var(--bg-primary)' }}
       >
         {[
@@ -199,8 +263,8 @@ export default function SessionController({
       </div>
 
       {/* ── Estimated total time ──────────────────────────────────────────── */}
-      <p className="text-xs text-center mb-6" style={{ color: 'var(--text-muted)' }}>
-        Estimasi durasi sesi:{' '}
+      <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+        Estimasi durasi:{' '}
         <span style={{ color: 'var(--text-secondary)' }}>
           ~{Math.ceil(totalSeconds / 60)} menit ({totalSeconds}s)
         </span>
@@ -212,7 +276,7 @@ export default function SessionController({
       {/* ── Error banner ──────────────────────────────────────────────────── */}
       {error && (
         <div
-          className="flex items-center gap-2 rounded-xl px-4 py-3 mb-4 text-sm"
+          className="flex items-center gap-2 rounded-xl px-4 py-3 text-sm"
           style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}
         >
           <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -231,7 +295,6 @@ export default function SessionController({
         </div>
       ) : (
         <div className="flex gap-3">
-
           {/* Start */}
           <button
             id="btn-start-session"
@@ -272,21 +335,25 @@ export default function SessionController({
               ? '⚠ Konfirmasi Hentikan'
               : 'Hentikan Sesi'}
           </button>
-
         </div>
       )}
 
       {/* Abort confirmation hint */}
       {confirmAbort && (
-        <p className="text-xs text-center mt-3 animate-fade-in" style={{ color: '#f59e0b' }}>
+        <p className="text-xs text-center animate-fade-in" style={{ color: '#f59e0b' }}>
           Klik &quot;Konfirmasi Hentikan&quot; sekali lagi untuk menghentikan sesi. Batalkan otomatis dalam 4 detik.
         </p>
       )}
 
-      {/* Session ID */}
-      <p className="text-xs text-center mt-4" style={{ color: 'var(--text-muted)' }}>
-        ID Sesi: <span className="font-mono">{sessionId.slice(-12)}</span>
-      </p>
+      {/* Status note for running */}
+      {status === 'running' && (
+        <div
+          className="rounded-xl px-4 py-3 text-sm text-center"
+          style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', color: '#10b981' }}
+        >
+          ● Sesi sedang berjalan — layar partisipan memperbarui secara otomatis
+        </div>
+      )}
     </div>
   )
 }

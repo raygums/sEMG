@@ -1,11 +1,11 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import type { PhaseType, SessionEvent } from '@/app/lib/types'
 
 interface SessionData {
   id: string
+  status: 'pending' | 'running' | 'completed' | 'aborted'
   gesture: {
     id: string
     name: string
@@ -45,24 +45,45 @@ const PHASE_COLORS: Record<PhaseType, { bg: string; border: string; glow: string
   },
 }
 
+// ── Python Bridge (local API, lihat emg_bridge.py) ───────────────────────────
+const BRIDGE_BASE_URL = 'http://localhost:8000'
+// Jangan kirim PUT /phase lebih sering dari ini KECUALI phase berubah (lihat
+// reportPhaseToBridge) -- transition guard presisinya ditangani di bridge,
+// throttle ini cuma mengurangi request HTTP redundan saat phase belum berubah.
+const PHASE_REPORT_THROTTLE_MS = 100
+
 export default function SessionRunner({ session }: { session: SessionData }) {
-  const router = useRouter()
   const { config, gesture } = session
 
+  // ── Core session state ─────────────────────────────────────────────────────
   const [phase, setPhase] = useState<PhaseType>('PREPARATION')
   const [repetition, setRepetition] = useState(1)
   const [timeRemaining, setTimeRemaining] = useState(config.preparationDuration)
   const [isRunning, setIsRunning] = useState(false)
   const [isFinished, setIsFinished] = useState(false)
-  const [countdown, setCountdown] = useState<number | null>(null) // Pre-start countdown
-  const [gatewayConnected, setGatewayConnected] = useState(true) // BLE gateway connectivity (polled)
-  const isPausedRef = useRef(false) // mirrors !gatewayConnected, read inside the RAF loop without re-subscribing it
 
+  // ── Countdown states ───────────────────────────────────────────────────────
+  // Pre-start countdown (3,2,1 setelah admin klik Mulai)
+  const [startCountdown, setStartCountdown] = useState<number | null>(null)
+  // Phase transition countdown (3,2,1 sebelum ACTION)
+  const [phaseCountdown, setPhaseCountdown] = useState<number | null>(null)
+  // Whether we're blocked waiting for phase countdown to finish
+  const phaseCountdownPendingRef = useRef(false)
+
+  // ── Admin control & connectivity ───────────────────────────────────────────
+  // 'waiting' = poll DB for status=running, 'aborted-remote' = aborted by admin
+  const [screenState, setScreenState] = useState<'waiting' | 'countdown' | 'running' | 'aborted-remote' | 'finished'>('waiting')
+
+  // ── Refs ───────────────────────────────────────────────────────────────────
   const eventsRef = useRef<SessionEvent[]>([])
   const startTimeRef = useRef<number>(0)
   const phaseStartRef = useRef<number>(0)
   const rafRef = useRef<number>(0)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const sessionStartedRef = useRef(false) // prevent double-start on re-render
+  const repetitionRef = useRef(1) // mirror of repetition state, readable in callbacks without stale closure
+  const lastReportedPhaseRef = useRef<PhaseType | null>(null)
+  const lastPhaseReportTimeRef = useRef(0)
 
   // Phase durations
   const getPhaseDuration = useCallback((p: PhaseType) => {
@@ -88,9 +109,6 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     }
     eventsRef.current.push(event)
 
-    // Send trigger for events the gateway needs to react to in real time:
-    // PHASE_ACTION (legacy use), and now SESSION_START/SESSION_END/SESSION_ABORT
-    // so the Python gateway can gate is_recording for Continuous Recording mode.
     const GATEWAY_RELEVANT_EVENTS = ['PHASE_ACTION', 'SESSION_START', 'SESSION_END', 'SESSION_ABORT']
     if (GATEWAY_RELEVANT_EVENTS.includes(eventType)) {
       fetch('/api/trigger', {
@@ -103,16 +121,52 @@ export default function SessionRunner({ session }: { session: SessionData }) {
           repetitionNum: rep,
           clientTimestamp: event.clientTimestamp,
         }),
-      }).catch(() => {}) // Fire and forget
+      }).catch(() => {})
     }
   }, [gesture, session.id])
+
+  // Report active phase to Python Bridge local API (Web-Driven Labeling).
+  // Fire-and-forget: kegagalan di sini TIDAK boleh menghentikan Master Clock
+  // Next.js -- bridge yang belum jalan tidak boleh menggagalkan sesi.
+  const reportPhaseToBridge = useCallback((currentPhase: PhaseType) => {
+    const now = performance.now()
+    const phaseChanged = currentPhase !== lastReportedPhaseRef.current
+    const throttleElapsed = now - lastPhaseReportTimeRef.current >= PHASE_REPORT_THROTTLE_MS
+
+    // Selalu kirim segera saat phase BERUBAH (supaya transition guard di
+    // bridge dapat sinyal secepat mungkin); throttle hanya saat phase SAMA.
+    if (!phaseChanged && !throttleElapsed) return
+
+    lastReportedPhaseRef.current = currentPhase
+    lastPhaseReportTimeRef.current = now
+
+    fetch(`${BRIDGE_BASE_URL}/phase`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: session.id, phase: currentPhase }),
+    }).catch(() => {
+      // Diamkan -- bridge mungkin belum dijalankan operator, itu tidak
+      // boleh menghentikan linimasa Web yang sedang berjalan.
+    })
+  }, [session.id])
+
+  const notifyBridgeSessionStart = useCallback(() => {
+    fetch(`${BRIDGE_BASE_URL}/session/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: session.id }),
+    }).catch(() => {})
+  }, [session.id])
+
+  const notifyBridgeSessionEnd = useCallback(() => {
+    fetch(`${BRIDGE_BASE_URL}/session/end`, { method: 'POST' }).catch(() => {})
+  }, [])
 
   // Flush events to server
   const flushEvents = useCallback(async () => {
     if (eventsRef.current.length === 0) return
     const events = [...eventsRef.current]
     eventsRef.current = []
-
     try {
       await fetch(`/api/sessions/${session.id}/events`, {
         method: 'POST',
@@ -120,18 +174,16 @@ export default function SessionRunner({ session }: { session: SessionData }) {
         body: JSON.stringify(events),
       })
     } catch {
-      // Re-add events on failure
       eventsRef.current = [...events, ...eventsRef.current]
     }
   }, [session.id])
 
-  // Transition to next phase
+  // Transition to next phase (with PREP→ACTION countdown)
   const nextPhase = useCallback((currentPhase: PhaseType, currentRep: number) => {
     if (currentPhase === 'PREPARATION') {
-      setPhase('ACTION')
-      setTimeRemaining(config.actionDuration)
-      phaseStartRef.current = performance.now()
-      logEvent('PHASE_ACTION', currentRep, { phaseDuration: config.actionDuration })
+      // Trigger phase transition countdown before ACTION
+      phaseCountdownPendingRef.current = true
+      setPhaseCountdown(3)
     } else if (currentPhase === 'ACTION') {
       setPhase('REST')
       setTimeRemaining(config.restDuration)
@@ -140,41 +192,66 @@ export default function SessionRunner({ session }: { session: SessionData }) {
       logEvent('REPETITION_END', currentRep)
     } else if (currentPhase === 'REST') {
       if (currentRep >= config.repetitionCount) {
-        // Session complete
         logEvent('SESSION_END', currentRep)
+        notifyBridgeSessionEnd()
         setIsFinished(true)
         setIsRunning(false)
-
-        // Update session status
+        setScreenState('finished')
         fetch(`/api/sessions/${session.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'completed' }),
         })
-
-        // Flush remaining events
         flushEvents()
         return
       }
-
-      // Next repetition
       const nextRep = currentRep + 1
       setRepetition(nextRep)
+      repetitionRef.current = nextRep
       setPhase('PREPARATION')
       setTimeRemaining(config.preparationDuration)
       phaseStartRef.current = performance.now()
       logEvent('REPETITION_START', nextRep)
       logEvent('PHASE_PREPARATION', nextRep, { phaseDuration: config.preparationDuration })
 
-      // Restart video
+      // Restart video for new repetition
       if (videoRef.current) {
         videoRef.current.currentTime = 0
         videoRef.current.play().catch(() => {})
       }
     }
-  }, [config, logEvent, flushEvents, session.id])
+  }, [config, logEvent, flushEvents, session.id, notifyBridgeSessionEnd])
 
-  // Main timer loop with requestAnimationFrame
+  // ── Phase transition countdown (PREP → ACTION) ─────────────────────────────
+  useEffect(() => {
+    if (phaseCountdown === null) return
+
+    if (phaseCountdown === 0) {
+      // Countdown done — transition to ACTION
+      setPhaseCountdown(null)
+      phaseCountdownPendingRef.current = false
+
+      // Transition happens here, after countdown
+      setPhase('ACTION')
+      setTimeRemaining(config.actionDuration)
+      phaseStartRef.current = performance.now()
+      reportPhaseToBridge('ACTION')
+      // Log with current repetition value via ref (safe from stale closure)
+      logEvent('PHASE_ACTION', repetitionRef.current, { phaseDuration: config.actionDuration })
+
+      // Play video when ACTION starts
+      if (videoRef.current) {
+        videoRef.current.currentTime = 0
+        videoRef.current.play().catch(() => {})
+      }
+      return
+    }
+
+    const timer = setTimeout(() => setPhaseCountdown(c => (c !== null ? c - 1 : null)), 1000)
+    return () => clearTimeout(timer)
+  }, [phaseCountdown, config.actionDuration, logEvent, reportPhaseToBridge])
+
+  // ── Main timer loop ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isRunning || isFinished) return
 
@@ -187,10 +264,8 @@ export default function SessionRunner({ session }: { session: SessionData }) {
       const frameDelta = now - lastFrameTime
       lastFrameTime = now
 
-      if (isPausedRef.current) {
-        // Freeze the timeline: push phaseStartRef forward by the same delta
-        // so "elapsed" doesn't grow while the BLE gateway is disconnected.
-        // No event is logged here - PHASE_* events only fire on real transitions.
+      // Freeze during phase countdown (PREP -> ACTION transition)
+      if (phaseCountdownPendingRef.current) {
         phaseStartRef.current += frameDelta
         rafRef.current = requestAnimationFrame(tick)
         return
@@ -201,14 +276,21 @@ export default function SessionRunner({ session }: { session: SessionData }) {
       const remaining = Math.max(0, duration - elapsed)
 
       setTimeRemaining(remaining)
+      reportPhaseToBridge(lastPhase)
 
       if (remaining <= 0) {
         nextPhase(lastPhase, lastRep)
 
         // Update local tracking
-        if (lastPhase === 'PREPARATION') lastPhase = 'ACTION'
-        else if (lastPhase === 'ACTION') lastPhase = 'REST'
-        else if (lastPhase === 'REST') {
+        if (lastPhase === 'PREPARATION') {
+          // Will become ACTION after phase countdown — keep as PREPARATION until countdown done
+          // The phaseCountdown useEffect will handle the actual state transition
+          // So we do NOT update lastPhase to ACTION here yet
+          // Instead mark as pending and let the RAF pause itself
+          lastPhase = 'ACTION' // local only — so next tick we don't call nextPhase again
+        } else if (lastPhase === 'ACTION') {
+          lastPhase = 'REST'
+        } else if (lastPhase === 'REST') {
           if (lastRep >= config.repetitionCount) return
           lastPhase = 'PREPARATION'
           lastRep += 1
@@ -219,109 +301,101 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     }
 
     rafRef.current = requestAnimationFrame(tick)
-
     return () => cancelAnimationFrame(rafRef.current)
-  }, [isRunning, isFinished, phase, repetition, getPhaseDuration, nextPhase, config.repetitionCount])
+  }, [isRunning, isFinished, phase, repetition, getPhaseDuration, nextPhase, config.repetitionCount, reportPhaseToBridge])
 
-  // Periodic flush events
+  // ── Periodic flush ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isRunning) return
     const interval = setInterval(flushEvents, 5000)
     return () => clearInterval(interval)
   }, [isRunning, flushEvents])
 
-  // Poll gateway connectivity status while the session is running, so the
-  // phase timeline can pause if the BLE link to the nRF52840 drops.
+  // ── Poll session status from DB (admin control) ────────────────────────────
+  // While waiting: detect when admin starts (status → running)
+  // While running: detect when admin aborts (status → aborted)
   useEffect(() => {
-    if (!isRunning || isFinished) return
+    if (screenState === 'finished' || screenState === 'aborted-remote') return
 
     let cancelled = false
 
-    const poll = async () => {
+    const pollStatus = async () => {
       try {
-        const res = await fetch(`/api/sessions/${session.id}/gateway-status`)
+        const res = await fetch(`/api/sessions/${session.id}`, {
+          headers: { 'Cache-Control': 'no-store' },
+        })
         if (!res.ok || cancelled) return
-        const data = await res.json()
-        setGatewayConnected(data.connected)
-        isPausedRef.current = !data.connected
-      } catch {
-        // Network hiccup on the polling request itself - don't pause on this
-        // alone, since it doesn't necessarily mean the BLE link is down.
-      }
+        const data = await res.json() as { status: string }
+
+        if (screenState === 'waiting' && data.status === 'running') {
+          // Admin started the session — begin pre-start countdown
+          if (!sessionStartedRef.current) {
+            sessionStartedRef.current = true
+            setScreenState('countdown')
+            setStartCountdown(3)
+          }
+        } else if (screenState === 'running' && data.status === 'aborted') {
+          // Admin aborted — stop session immediately
+          cancelled = true
+          cancelAnimationFrame(rafRef.current)
+          setIsRunning(false)
+          setScreenState('aborted-remote')
+          notifyBridgeSessionEnd()
+          flushEvents()
+        }
+      } catch { /* ignore */ }
     }
 
-    poll()
-    const interval = setInterval(poll, 1500)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [isRunning, isFinished, session.id])
+    pollStatus()
+    const interval = setInterval(pollStatus, 1500)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [screenState, session.id, flushEvents, notifyBridgeSessionEnd])
 
-  // Pre-start countdown
-  function startCountdown() {
-    setCountdown(3)
-
-    // Update session status to running
-    fetch(`/api/sessions/${session.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'running' }),
-    })
-  }
-
+  // ── Pre-start countdown (3,2,1 → GO!) ─────────────────────────────────────
   useEffect(() => {
-    if (countdown === null) return
-    if (countdown === 0) {
-      setCountdown(null)
+    if (startCountdown === null) return
+    if (startCountdown === 0) {
+      setStartCountdown(null)
       setIsRunning(true)
+      setScreenState('running')
       startTimeRef.current = performance.now()
       phaseStartRef.current = performance.now()
 
       logEvent('SESSION_START', 1)
       logEvent('REPETITION_START', 1)
       logEvent('PHASE_PREPARATION', 1, { phaseDuration: config.preparationDuration })
+      notifyBridgeSessionStart()
+      reportPhaseToBridge('PREPARATION')
 
-      // Start video
+      // Video starts during PREPARATION, not ACTION
+      // Autoplay on first PREP
       if (videoRef.current) {
+        videoRef.current.currentTime = 0
         videoRef.current.play().catch(() => {})
       }
       return
     }
-
-    const timer = setTimeout(() => setCountdown(countdown - 1), 1000)
+    const timer = setTimeout(() => setStartCountdown(c => (c !== null ? c - 1 : null)), 1000)
     return () => clearTimeout(timer)
-  }, [countdown, config.preparationDuration, logEvent])
+  }, [startCountdown, config.preparationDuration, logEvent, notifyBridgeSessionStart, reportPhaseToBridge])
 
-  // Abort session
-  function abortSession() {
-    if (!confirm('Yakin ingin menghentikan sesi?')) return
-    cancelAnimationFrame(rafRef.current)
-    setIsRunning(false)
-    logEvent('SESSION_ABORT', repetition)
+  // ── Auto-play video after remounts ────────────────────────────────────────
+  useEffect(() => {
+    if (screenState === 'running' && phaseCountdown === null && phase !== 'REST') {
+      if (videoRef.current) {
+        videoRef.current.play().catch(() => {})
+      }
+    }
+  }, [screenState, phaseCountdown, phase, repetition])
 
-    fetch(`/api/sessions/${session.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'aborted' }),
-    })
-
-    flushEvents()
-    router.push('/session')
-  }
-
-  // Progress calculations
+  // ── Render helpers ─────────────────────────────────────────────────────────
   const phaseDuration = getPhaseDuration(phase)
   const phaseProgress = phaseDuration > 0 ? ((phaseDuration - timeRemaining) / phaseDuration) * 100 : 0
-
   const totalPhases = config.repetitionCount * 3
-  const completedPhases = (repetition - 1) * 3 +
-    (phase === 'PREPARATION' ? 0 : phase === 'ACTION' ? 1 : 2)
+  const completedPhases = (repetition - 1) * 3 + (phase === 'PREPARATION' ? 0 : phase === 'ACTION' ? 1 : 2)
   const totalProgress = (completedPhases / totalPhases) * 100
-
   const phaseStyle = PHASE_COLORS[phase]
 
-  // Format time
   function formatTime(seconds: number): string {
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
@@ -329,31 +403,92 @@ export default function SessionRunner({ session }: { session: SessionData }) {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(2, '0')}`
   }
 
-  // Pre-start overlay
-  if (countdown !== null) {
+  // ── SCREEN: Waiting for admin ──────────────────────────────────────────────
+  if (screenState === 'waiting') {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center" style={{ background: 'var(--bg-primary)' }}>
+        <div className="text-center glass-card p-12 max-w-lg animate-fade-in">
+          {/* Animated pulse ring */}
+          <div className="relative w-24 h-24 mx-auto mb-8">
+            <div
+              className="absolute inset-0 rounded-full animate-ping opacity-30"
+              style={{ background: 'var(--color-accent)' }}
+            />
+            <div
+              className="relative w-24 h-24 rounded-full flex items-center justify-center"
+              style={{ background: 'linear-gradient(135deg, var(--color-accent), var(--color-preparation))' }}
+            >
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+                <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+              </svg>
+            </div>
+          </div>
+
+          <h1 className="text-2xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
+            Layar Partisipan
+          </h1>
+          <p className="text-lg mb-1" style={{ color: 'var(--color-accent)' }}>
+            {gesture.label}
+          </p>
+          {session.participantName && (
+            <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
+              Partisipan: {session.participantName}
+            </p>
+          )}
+          <div
+            className="rounded-xl px-6 py-4 mb-6"
+            style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.3)' }}
+          >
+            <p className="text-sm font-medium" style={{ color: '#06b6d4' }}>
+              ⏳ Menunggu admin memulai sesi...
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              Jangan tutup halaman ini. Sesi akan otomatis dimulai.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-4 gap-3">
+            {[
+              { label: 'Persiapan', value: `${config.preparationDuration}s`, color: 'var(--color-preparation)' },
+              { label: 'Aksi', value: `${config.actionDuration}s`, color: 'var(--color-action)' },
+              { label: 'Istirahat', value: `${config.restDuration}s`, color: 'var(--color-rest)' },
+              { label: 'Repetisi', value: `${config.repetitionCount}×`, color: 'var(--color-accent)' },
+            ].map(item => (
+              <div key={item.label} className="p-3 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{item.label}</p>
+                <p className="text-lg font-bold" style={{ color: item.color }}>{item.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+
+
+  // ── SCREEN: Aborted by admin ───────────────────────────────────────────────
+  if (screenState === 'aborted-remote') {
     return (
       <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
-        <div className="text-center">
-          <p className="text-sm uppercase tracking-widest mb-4" style={{ color: 'var(--text-muted)' }}>
-            Bersiap...
+        <div className="text-center glass-card p-12 max-w-md animate-slide-up">
+          <div className="text-6xl mb-4">🛑</div>
+          <h1 className="text-2xl font-bold mb-2" style={{ color: '#ef4444' }}>
+            Sesi Dihentikan
+          </h1>
+          <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>
+            Admin telah menghentikan sesi ini. Tunggu instruksi selanjutnya.
           </p>
-          <div
-            className="text-9xl font-bold animate-countdown"
-            key={countdown}
-            style={{ color: 'var(--color-accent)' }}
-          >
-            {countdown}
-          </div>
-          <p className="mt-6 text-lg" style={{ color: 'var(--text-secondary)' }}>
-            {gesture.label}
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Sesi: {session.id.slice(-8)}
           </p>
         </div>
       </div>
     )
   }
 
-  // Finished overlay
-  if (isFinished) {
+  // ── SCREEN: Finished ───────────────────────────────────────────────────────
+  if (screenState === 'finished') {
     return (
       <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
         <div className="text-center glass-card p-12 max-w-md animate-slide-up">
@@ -367,76 +502,15 @@ export default function SessionRunner({ session }: { session: SessionData }) {
           <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
             {config.repetitionCount} repetisi berhasil direkam
           </p>
-          <div className="flex gap-3 justify-center">
-            <button className="btn btn-primary" onClick={() => router.push('/session')}>
-              Sesi Baru
-            </button>
-            <button className="btn btn-secondary" onClick={() => router.push('/admin/sessions')}>
-              Lihat Riwayat
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // Not started yet
-  if (!isRunning) {
-    return (
-      <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
-        <div className="text-center glass-card p-12 max-w-lg animate-fade-in">
-          <div
-            className="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, var(--color-accent), var(--color-preparation))' }}
-          >
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
-            Sesi Akuisisi Data
-          </h1>
-          <p className="text-lg mb-1" style={{ color: 'var(--color-accent)' }}>
-            {gesture.label}
-          </p>
-          {session.participantName && (
-            <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-              Partisipan: {session.participantName}
-            </p>
-          )}
-          <div className="grid grid-cols-4 gap-3 mb-8">
-            <div className="p-3 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Persiapan</p>
-              <p className="text-lg font-bold" style={{ color: 'var(--color-preparation)' }}>{config.preparationDuration}s</p>
-            </div>
-            <div className="p-3 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Aksi</p>
-              <p className="text-lg font-bold" style={{ color: 'var(--color-action)' }}>{config.actionDuration}s</p>
-            </div>
-            <div className="p-3 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Istirahat</p>
-              <p className="text-lg font-bold" style={{ color: 'var(--color-rest)' }}>{config.restDuration}s</p>
-            </div>
-            <div className="p-3 rounded-xl" style={{ background: 'var(--bg-primary)' }}>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Repetisi</p>
-              <p className="text-lg font-bold" style={{ color: 'var(--color-accent)' }}>{config.repetitionCount}×</p>
-            </div>
-          </div>
-          <button className="btn btn-primary text-lg px-10 py-3.5" onClick={startCountdown}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="6 3 20 12 6 21 6 3" />
-            </svg>
-            Mulai
-          </button>
-          <p className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
-            Pastikan sensor EMG sudah siap sebelum memulai
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Tunggu instruksi admin untuk sesi berikutnya.
           </p>
         </div>
       </div>
     )
   }
 
-  // Main Session Runner UI
+  // ── SCREEN: Main session runner UI ─────────────────────────────────────────
   return (
     <div
       className="fixed inset-0 flex flex-col transition-all duration-500"
@@ -445,30 +519,12 @@ export default function SessionRunner({ session }: { session: SessionData }) {
         borderTop: `4px solid ${phaseStyle.border}`,
       }}
     >
-      {/* Gateway connectivity warning - timeline is paused while this is visible */}
-      {!gatewayConnected && (
-        <div
-          className="text-center py-2 animate-pulse-glow"
-          style={{ background: '#dc2626' }}
-        >
-          <p className="text-sm font-bold tracking-wide uppercase" style={{ color: '#fff' }}>
-            ⚠️ Sensor BLE terputus — linimasa dijeda, menunggu koneksi kembali...
-          </p>
-        </div>
-      )}
-
       {/* Phase Banner */}
       <div
         className="text-center py-3 transition-all duration-500"
-        style={{
-          background: phaseStyle.border,
-          boxShadow: phaseStyle.glow,
-        }}
+        style={{ background: phaseStyle.border, boxShadow: phaseStyle.glow }}
       >
-        <h2
-          className="text-lg font-bold tracking-widest uppercase animate-pulse-glow"
-          style={{ color: '#fff' }}
-        >
+        <h2 className="text-lg font-bold tracking-widest uppercase animate-pulse-glow" style={{ color: '#fff' }}>
           {phaseStyle.label}
         </h2>
       </div>
@@ -477,7 +533,7 @@ export default function SessionRunner({ session }: { session: SessionData }) {
       <div className="flex-1 flex flex-col items-center justify-center px-6">
         {/* Video Player */}
         <div
-          className="w-full max-w-3xl rounded-2xl overflow-hidden transition-all duration-500"
+          className="w-full max-w-3xl rounded-2xl overflow-hidden transition-all duration-500 relative"
           style={{
             border: `2px solid ${phaseStyle.border}`,
             boxShadow: phaseStyle.glow,
@@ -485,8 +541,18 @@ export default function SessionRunner({ session }: { session: SessionData }) {
             background: '#000',
           }}
         >
+          {/* Black overlay for REST phase */}
+          <div 
+            className="absolute inset-0 z-10 transition-opacity duration-500 pointer-events-none" 
+            style={{ 
+              background: '#000', 
+              opacity: phase === 'REST' ? 1 : 0 
+            }} 
+          />
+
           {gesture.videoUrl ? (
             <video
+              key={gesture.id}
               ref={videoRef}
               src={gesture.videoUrl}
               className="w-full h-full object-contain"
@@ -528,7 +594,6 @@ export default function SessionRunner({ session }: { session: SessionData }) {
 
         {/* Progress Bars */}
         <div className="w-full max-w-3xl mt-6 space-y-3">
-          {/* Phase Progress */}
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span style={{ color: 'var(--text-muted)' }}>Sisa Waktu Fase</span>
@@ -545,7 +610,6 @@ export default function SessionRunner({ session }: { session: SessionData }) {
             </div>
           </div>
 
-          {/* Total Progress */}
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span style={{ color: 'var(--text-muted)' }}>Progres Sesi Total</span>
@@ -564,16 +628,61 @@ export default function SessionRunner({ session }: { session: SessionData }) {
         </div>
       </div>
 
-      {/* Bottom Bar */}
+      {/* Bottom info bar (no abort button — controlled by admin) */}
       <div className="px-6 py-4 flex items-center justify-between" style={{ borderTop: `1px solid ${phaseStyle.border}` }}>
         <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
           {session.participantName && `Partisipan: ${session.participantName} · `}
           Sesi: {session.id.slice(-8)}
         </div>
-        <button className="btn btn-danger text-sm" onClick={abortSession}>
-          ■ Hentikan Sesi
-        </button>
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Dikontrol oleh admin
+        </div>
       </div>
+
+      {/* Overlay: Pre-start countdown (3,2,1) - Solid Background */}
+      {screenState === 'countdown' && startCountdown !== null && (
+        <div className="absolute inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
+          <div className="text-center">
+            <p className="text-sm uppercase tracking-widest mb-4" style={{ color: 'var(--text-muted)' }}>
+              Bersiap...
+            </p>
+            <div
+              className="text-9xl font-bold animate-countdown"
+              key={startCountdown}
+              style={{ color: 'var(--color-accent)' }}
+            >
+              {startCountdown}
+            </div>
+            <p className="mt-6 text-lg" style={{ color: 'var(--text-secondary)' }}>
+              {gesture.label}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Overlay: Phase transition countdown (PREP → ACTION) - Solid Background */}
+      {phaseCountdown !== null && (
+        <div className="absolute inset-0 flex items-center justify-center z-50" style={{ background: 'var(--bg-primary)' }}>
+          <div className="text-center">
+            <p
+              className="text-sm uppercase tracking-widest mb-4 font-semibold"
+              style={{ color: '#10b981' }}
+            >
+              Fase Aksi Dimulai!
+            </p>
+            <div
+              className="text-9xl font-bold animate-countdown"
+              key={`phase-${phaseCountdown}`}
+              style={{ color: '#10b981', textShadow: '0 0 60px rgba(16,185,129,0.6)' }}
+            >
+              {phaseCountdown}
+            </div>
+            <p className="mt-6 text-lg font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Tahan Pose — {gesture.label}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

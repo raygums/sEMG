@@ -17,6 +17,7 @@ export default async function SessionRunnerPage({ params }: { params: Promise<{ 
     redirect('/session')
   }
 
+  // Abort/completed sessions show their final state in SessionRunner
   const serialized = {
     id: session.id,
     status: session.status as 'pending' | 'running' | 'completed' | 'aborted',
