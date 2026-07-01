@@ -109,7 +109,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         {/* Session Runner Link */}
         <div className="px-3 pb-3">
           <Link
-            href="/session"
+            href="/admin/sessions/new"
             className="btn btn-primary w-full text-sm"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
